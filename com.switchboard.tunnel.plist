@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.dsm.imessage-tunnel</string>
+  <key>Label</key><string>com.switchboard.tunnel</string>
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/cloudflared</string>
@@ -12,11 +12,11 @@
     <string>http2</string>
     <string>tunnel</string>
     <string>run</string>
-    <string>imessage-mcp</string>
+    <string>switchboard</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/imessage-tunnel.log</string>
-  <key>StandardErrorPath</key><string>/tmp/imessage-tunnel.log</string>
+  <key>StandardOutPath</key><string>/tmp/switchboard-tunnel.log</string>
+  <key>StandardErrorPath</key><string>/tmp/switchboard-tunnel.log</string>
 </dict>
 </plist>

@@ -1,7 +1,13 @@
-# imessage-mcp
+# Switchboard
 
-An MCP server that gives an AI agent your Mac's Messages history: iMessage, SMS
-and RCS, with contact names resolved, and optionally the ability to send.
+An MCP server that patches an AI agent onto your Mac's Messages history:
+iMessage, SMS and RCS, with contact names resolved, and optionally the ability
+to send.
+
+The name is the hard part of the problem. An operator's whole job is putting a
+call on the right line, and that is what sending here turns out to be: pick the
+wrong Messages account for a contact and the text is accepted, never delivered,
+and reported as a success.
 
 Runs over stdio for a local client, or over HTTP behind a bearer token if you
 want to reach it from somewhere else. No daemon of its own, no database of its
@@ -22,15 +28,15 @@ Read the [Security](#security) section before you expose this to anything.
 ## Quick start
 
 ```bash
-git clone https://github.com/danielscottmitchell/imessage-mcp
-cd imessage-mcp
+git clone https://github.com/danielscottmitchell/switchboard
+cd switchboard
 uv run server.py        # speaks MCP over stdio, exits when the client closes
 ```
 
 Register it with a client. For Claude Code:
 
 ```bash
-claude mcp add imessage -- uv run --directory /path/to/imessage-mcp server.py
+claude mcp add switchboard -- uv run --directory /path/to/switchboard server.py
 ```
 
 Or by hand, in any client that takes a stdio command:
@@ -38,9 +44,9 @@ Or by hand, in any client that takes a stdio command:
 ```json
 {
   "mcpServers": {
-    "imessage": {
+    "switchboard": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/imessage-mcp", "server.py"]
+      "args": ["run", "--directory", "/path/to/switchboard", "server.py"]
     }
   }
 }
@@ -220,6 +226,10 @@ interpreter directly without a shell wrapper:
 security add-generic-password -U -s imessage-mcp-token -a "$USER" -w "$TOKEN"
 ```
 
+The Keychain service name predates the project being named, and is left alone so
+an existing install keeps working. Pass `IMESSAGE_TOKEN` directly if you would
+rather not use Keychain at all.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `IMESSAGE_TOKEN` | Keychain `imessage-mcp-token` | Bearer token. Refuses to start without one, or under 32 chars |
@@ -238,9 +248,20 @@ Client config:
 ```
 
 The included plists are templates for running the server and a Cloudflare tunnel
-as LaunchAgents. Replace `YOUR_USER` and the hostname. After a code change,
-`launchctl kickstart -k gui/$(id -u)/com.dsm.imessage-mcp`; after a plist change,
-`bootout` then `bootstrap`, because kickstart keeps the cached job definition.
+as LaunchAgents. Replace `YOUR_USER` and the hostname, then substitute your own
+label below if you install them under a different one.
+
+```bash
+# after a code change
+launchctl kickstart -k gui/$(id -u)/com.switchboard.mcp
+
+# after a plist change: kickstart keeps the cached job definition
+launchctl bootout   gui/$(id -u)/com.switchboard.mcp
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.switchboard.mcp.plist
+```
+
+The server identifies itself to MCP as `imessage`, which is cosmetic; the name
+you register it under in your client is what prefixes the tools.
 
 ## How it works
 

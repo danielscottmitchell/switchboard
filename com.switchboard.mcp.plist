@@ -2,13 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.dsm.imessage-mcp</string>
+  <key>Label</key><string>com.switchboard.mcp</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/YOUR_USER/projects/imessage-mcp/.venv/bin/python3</string>
-    <string>/Users/YOUR_USER/projects/imessage-mcp/http_server.py</string>
+    <string>/Users/YOUR_USER/projects/switchboard/.venv/bin/python3</string>
+    <string>/Users/YOUR_USER/projects/switchboard/http_server.py</string>
   </array>
-  <key>WorkingDirectory</key><string>/Users/YOUR_USER/projects/imessage-mcp</string>
+  <key>WorkingDirectory</key><string>/Users/YOUR_USER/projects/switchboard</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>IMESSAGE_PUBLIC_HOST</key><string>relay.example.com</string>
@@ -17,7 +17,7 @@
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/tmp/imessage-mcp.log</string>
-  <key>StandardErrorPath</key><string>/tmp/imessage-mcp.log</string>
+  <key>StandardOutPath</key><string>/tmp/switchboard.log</string>
+  <key>StandardErrorPath</key><string>/tmp/switchboard.log</string>
 </dict>
 </plist>
