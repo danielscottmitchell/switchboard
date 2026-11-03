@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.dsm.imessage-tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/cloudflared</string>
+    <string>--no-autoupdate</string>
+    <!-- QUIC dies behind a low-MTU VPN interface; see the gotchas in README -->
+    <string>--protocol</string>
+    <string>http2</string>
+    <string>tunnel</string>
+    <string>run</string>
+    <string>imessage-mcp</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/imessage-tunnel.log</string>
+  <key>StandardErrorPath</key><string>/tmp/imessage-tunnel.log</string>
+</dict>
+</plist>
