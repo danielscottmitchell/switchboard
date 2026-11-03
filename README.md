@@ -1,24 +1,54 @@
 # imessage-mcp
 
-MCP access to this Mac's iMessage, SMS and RCS history, with contact names and
-the ability to send. Runs as two LaunchAgents and is reachable from anywhere
-through a Cloudflare tunnel.
+An MCP server that gives an AI agent your Mac's Messages history: iMessage, SMS
+and RCS, with contact names resolved, and optionally the ability to send.
 
-## Connecting a client
+Runs over stdio for a local client, or over HTTP behind a bearer token if you
+want to reach it from somewhere else. No daemon of its own, no database of its
+own, no network calls except the ones your client makes.
+
+Read the [Security](#security) section before you expose this to anything.
+
+## Requirements
+
+- macOS. The whole thing is built on `~/Library/Messages/chat.db` and
+  AppleScript, so there is no Linux or Windows story.
+- Python 3.11 or newer. Dependencies are declared inline with PEP 723, so
+  [uv](https://docs.astral.sh/uv/) can run it with nothing installed.
+- Messages signed in to the account whose history you want.
+- Full Disk Access for whichever interpreter runs the server. This is the step
+  people get stuck on, so it has [its own section](#full-disk-access).
+
+## Quick start
+
+```bash
+git clone https://github.com/danielscottmitchell/imessage-mcp
+cd imessage-mcp
+uv run server.py        # speaks MCP over stdio, exits when the client closes
+```
+
+Register it with a client. For Claude Code:
+
+```bash
+claude mcp add imessage -- uv run --directory /path/to/imessage-mcp server.py
+```
+
+Or by hand, in any client that takes a stdio command:
 
 ```json
 {
-  "type": "http",
-  "url": "https://relay.example.com/mcp",
-  "headers": { "Authorization": "Bearer <token>" }
+  "mcpServers": {
+    "imessage": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/imessage-mcp", "server.py"]
+    }
+  }
 }
 ```
 
-```bash
-security find-generic-password -s imessage-mcp-token -w   # the token
-```
-
-Anything without that header gets a 401 before it touches the database.
+Sending is on by default. Set `IMESSAGE_ALLOW_SEND=0` in the environment for a
+read-only server; the send tool is then never registered, so it is absent from
+`tools/list` instead of present and refusing.
 
 ## Tools
 
@@ -29,6 +59,62 @@ Anything without that header gets a 401 before it touches the database.
 | `search_messages(query, limit=40, handle="")` | Case-insensitive substring search, newest first |
 | `find_contact(query, limit=20)` | Name to handles, with message counts |
 | `send_message(to, text)` | Sends. Registered only when `IMESSAGE_ALLOW_SEND` is not `0` |
+
+## Full Disk Access
+
+`chat.db` is protected by macOS privacy controls. The grant is **per
+executable** and does not inherit, so granting it to your terminal or to Claude
+Desktop does nothing for a server that something else launches.
+
+Grant it to the interpreter that actually runs the code. If you use a project
+venv, build it so the interpreter is a real file at a path you own:
+
+```bash
+python3 -m venv --copies .venv
+.venv/bin/python3 -m pip install 'mcp>=2.0.0' 'uvicorn>=0.30'
+```
+
+Then System Settings, Privacy & Security, Full Disk Access, and add
+`<repo>/.venv/bin/python3`. Use Command-Shift-G in the file picker to type a
+path beginning with a dot.
+
+Two things that bite:
+
+- Granting a Homebrew interpreter works until `brew upgrade` moves it, which
+  silently revokes the grant. A `--copies` venv in your own directory survives.
+- `ps` will show the server running through Homebrew's `Python.app`, because
+  that is what the venv re-execs into. The grant still applies.
+
+A successful MCP handshake proves nothing here, because `initialize` never
+touches the database. Call `list_chats` to confirm.
+
+## Sending, and the Automation grant
+
+Sending drives Messages through AppleScript, which needs a second, separate
+grant: Automation, for Messages, keyed to the same binary. The Automation pane
+cannot be pre-filled, because it only lists clients that have already asked.
+
+Trigger the prompt without sending anything:
+
+```bash
+osascript -e 'tell application "Messages" to get count of chats'
+```
+
+Run that from whatever process will later do the sending, so that binary is the
+responsible one. Then check the row landed, instead of trusting that the
+AppleScript returned cleanly:
+
+```bash
+sqlite3 ~/Library/Application\ Support/com.apple.TCC/TCC.db \
+  "select client, auth_value from access
+   where service='kTCCServiceAppleEvents'
+     and indirect_object_identifier='com.apple.MobileSMS'"
+```
+
+**A send that times out with `-1712` has not failed.** The Apple Event is parked
+awaiting consent, and every parked event fires the moment you approve the
+prompt. Retrying a `-1712` send is how one contact here received the same text
+three times.
 
 ## How an agent should use this
 
@@ -55,153 +141,84 @@ routes there. Asking for a service by hand is how messages get lost.
 | `sent to +1555… over RCS` | Same, delivered over RCS |
 | `not sent: Messages reported error 22 …` | Accepted then failed, usually a non-Apple device |
 | `not sent: <error>` | AppleScript refused outright |
-| `unknown: no Automation access … (-1712)` | Consent missing. **Never retry.** See below |
+| `unknown: no Automation access … (-1712)` | Consent missing. **Never retry** |
 | `queued for +1555…, no delivery record yet` | No verdict within 25s. Check before resending |
 
-**Never retry a send that did not clearly fail.** On `unknown` or `queued`, read
-the conversation with `get_conversation` first. A `-1712` event is parked, not
-dropped, and fires the moment consent is approved. This already sent one contact
-three identical texts.
+On `unknown` or `queued`, read the conversation with `get_conversation` before
+doing anything else.
 
-## Services, and why RCS matters here
+## Services, and why RCS matters
 
 Contacts fall into three groups and they are not interchangeable.
 
 | Service | Who | Sending |
 |---|---|---|
-| iMessage | Apple devices | Verified working |
-| RCS | Android contacts on this Mac | Verified working, via the SMS account |
-| SMS | Older threads | Mostly superseded by RCS; many SMS chats are dead |
+| iMessage | Apple devices | Works |
+| RCS | Android contacts, on macOS 15 and newer | Works, routed through the SMS account |
+| SMS | Older threads | Largely superseded by RCS; many SMS chats are dead |
 
-Targeting iMessage for an Android contact does not fail loudly. Messages accepts
-the text, cannot deliver it, and records `error=22`. Two real replies were lost
-that way on 2026-11-02 while the tool reported success.
+Targeting iMessage for an Android contact does not fail loudly. Messages
+accepts the text, cannot deliver it, and records `error=22`. Two real replies
+were lost that way here before this was fixed, while the tool reported success.
 
-Routing picks the **account** matching the service the contact was last
-genuinely reached on. That is the last message that actually went through, not
-the newest message. The distinction is load-bearing: a failed send still lands a
-row, so those two dead iMessage attempts are newer than the RCS threads they
-should have used. Ranking by recency alone would pick the corpse and fail
-forever.
+Routing picks the Messages **account** matching the service the contact was last
+genuinely reached on. "Genuinely" means the last message with `error = 0` that
+was either inbound or actually sent, not simply the newest row. That distinction
+is load-bearing: a failed send still lands a row, so a dead iMessage attempt is
+newer than the thread that works, and ranking by recency alone picks the corpse
+and fails forever.
 
 ```
 +15550111111  ->  SMS account       (last good message was RCS)
-+15550122222  ->  SMS account       (last good message was RCS)
 +15550133333  ->  iMessage account
 5550133333    ->  iMessage account  (bare numbers normalize)
 nobody@x.com  ->  iMessage account  (no history, best guess)
 ```
 
 Everything that is not iMessage routes through the SMS account. The RCS-typed
-account on this Mac reports itself disabled while RCS traffic rides the carrier
-path, and Messages negotiates the RCS upgrade itself. The read-back names the
-service the message actually left on, so the return value is the source of
-truth, not this table.
+account reports itself disabled while RCS traffic rides the carrier path, and
+Messages negotiates the RCS upgrade on its own. Confirmed by sending: the
+message went out through the SMS account and landed as `service=RCS`,
+`error=0`, `is_delivered=1`.
 
-Addressing a chat by its GUID would be more precise and does not work.
-Messages only resolves the conversations it currently holds: 231 of the 3383 in
-the database, as of 2026-11-03. Anything older fails with `-1728`, "Can't get
-chat id". That bug silently broke sends to any contact whose thread had aged
-out, which is most of them.
+RCS writes its database row several seconds slower than iMessage, so the
+read-back waits 25 seconds. A `queued` return means the wait ran out, not that
+the send failed.
 
-RCS delivery is proven end to end as of 2026-11-03: a send routed through the
-SMS account landed as `service=RCS`, `error=0`, `is_delivered=1`. Messages does
-the upgrade itself, so the SMS account is the correct route and the return value
-names RCS.
-
-RCS lands its database row more slowly than iMessage. The read-back waits 25
-seconds; the first proven RCS send took over six. A `queued` return means the
-wait ran out, not that the send failed, so read the conversation instead of
-sending again.
+**Addressing a chat by its GUID looks right and does not work.** AppleScript
+only resolves the conversations Messages currently holds, which was 231 of 3383
+on the machine this was built on. Anything older fails with `-1728`, "Can't get
+chat id", which looks like a missing contact rather than a stale chat list.
 
 ## Contact names
 
-843 contacts merged from all four AddressBook stores (iCloud, Google, local),
-cached until one changes on disk. Keyed on the last ten digits of a phone number
-or a lowercased email, so `5550133333` and `+1 (555) 013-3333` are the same
-person.
+Names come from every AddressBook store on the machine, iCloud and Google and
+local, merged, cached until one changes on disk. Keyed on the last ten digits of
+a phone number or a lowercased email, so `5550133333` and `+1 (555) 013-3333`
+are the same person.
 
-Resolves 672 of 2383 handles, which is 28% of handles but **97% of message
-volume**. The rest are shortcodes and one-off senders. An unknown handle shows
-as the raw number, never a wrong name.
+On the machine this was built on, that resolves 672 of 2383 handles. 28% of
+handles, but 97% of message volume; the rest are shortcodes and one-off senders.
+An unresolved handle shows as the raw number, never a guessed name.
 
-## Shape
+## Remote access
 
-```
-client -> Cloudflare edge -> cloudflared -> 127.0.0.1:8765 -> chat.db snapshot
-```
-
-- `server.py` builds the MCP server and the tools. Usable directly over stdio.
-- `http_server.py` adds streamable HTTP, reads the token from Keychain, binds
-  loopback only. TLS terminates at the tunnel.
-- `com.dsm.imessage-mcp.plist` runs the server. `KeepAlive`, `RunAtLoad`.
-- `com.dsm.imessage-tunnel.plist` runs `cloudflared tunnel run imessage-mcp`.
-- The tunnel's credentials and ingress live in `~/.cloudflared/`.
-
-Reads go against a copy of `chat.db` plus its `-wal` and `-shm`, refreshed when
-the source mtime moves, so the live WAL database is never locked.
-
-About 30% of messages keep their text in an `attributedBody` NSArchiver blob
-rather than the `text` column. SQLite cannot `LIKE` into it, so
-`search_messages` runs a SQL pass and a Python blob scan and merges them.
-Dropping the blob scan loses a third to two thirds of hits depending on the term.
-
-## Permissions
-
-Two macOS grants, neither of which inherits from anything.
-
-**Full Disk Access** on `<repo>/.venv/bin/python3`,
-for `chat.db` and the AddressBook stores. Granted per executable, and launchd
-spawns the agent, so the host app's grant does nothing for it. The venv was
-built with `--copies` so the interpreter is a real file at a stable path; a
-Homebrew path is version pinned and `brew upgrade` would silently revoke it.
-`ps` shows the Homebrew `Python.app` it re-execs through, and the grant still
-applies.
-
-**Automation** for Messages, needed only for sending. Keyed to the same binary,
-so the host app's grant does not cover it, and the Automation pane cannot be
-pre-filled because it only lists clients that have already asked. Trigger the
-prompt without sending anything:
+`http_server.py` serves the same tools over streamable HTTP, binds loopback
+only, and rejects anything without a bearer token before MCP sees the request.
+Put a tunnel in front of it for remote access.
 
 ```bash
-osascript -e 'tell application "Messages" to get count of chats'
+export IMESSAGE_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(40))')"
+export IMESSAGE_PUBLIC_HOST=relay.example.com
+uv run http_server.py
 ```
 
-run from a one-shot launchd job using `.venv/bin/python3`, so that binary is the
-responsible process. Then confirm the row exists, rather than trusting that the
-AppleScript succeeded:
+On macOS it will also read the token from Keychain, so launchd can exec the
+interpreter directly without a shell wrapper:
 
 ```bash
-sqlite3 ~/Library/Application\ Support/com.apple.TCC/TCC.db \
-  "select client, auth_value from access
-   where service='kTCCServiceAppleEvents'
-     and indirect_object_identifier='com.apple.MobileSMS'"
+security add-generic-password -U -s imessage-mcp-token -a "$USER" -w "$TOKEN"
 ```
-
-`initialize` returns 200 without touching any database, so a healthy handshake
-proves nothing about Full Disk Access. Call `list_chats`.
-
-## Operating it
-
-```bash
-# after a code change
-launchctl kickstart -k gui/$(id -u)/com.dsm.imessage-mcp
-
-# after a plist change: kickstart keeps the cached job definition
-launchctl bootout   gui/$(id -u)/com.dsm.imessage-mcp
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dsm.imessage-mcp.plist
-
-# rotate the token, then reload as above
-security add-generic-password -U -s imessage-mcp-token -a "$USER" \
-  -w "$(python3 -c 'import secrets; print(secrets.token_urlsafe(40))')"
-```
-
-Logs: `/tmp/imessage-mcp.log`, `/tmp/imessage-tunnel.log`. The startup line says
-`send enabled` or `send disabled`, the quickest check that an env change landed.
-
-Set `IMESSAGE_ALLOW_SEND=0` and reload for a read-only endpoint. `send_message`
-is then never registered, so it is absent from `tools/list` rather than present
-and refusing.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -210,24 +227,88 @@ and refusing.
 | `IMESSAGE_PORT` | `8765` | Loopback port |
 | `IMESSAGE_ALLOW_SEND` | `1` | `0` hides the send tool |
 
+Client config:
+
+```json
+{
+  "type": "http",
+  "url": "https://relay.example.com/mcp",
+  "headers": { "Authorization": "Bearer <token>" }
+}
+```
+
+The included plists are templates for running the server and a Cloudflare tunnel
+as LaunchAgents. Replace `YOUR_USER` and the hostname. After a code change,
+`launchctl kickstart -k gui/$(id -u)/com.dsm.imessage-mcp`; after a plist change,
+`bootout` then `bootstrap`, because kickstart keeps the cached job definition.
+
+## How it works
+
+```
+client -> MCP -> snapshot of chat.db
+```
+
+Reads go against a copy of `chat.db` plus its `-wal` and `-shm`, refreshed when
+the source mtime moves, so the live WAL database is never locked and Messages
+never blocks.
+
+About 30% of messages keep their text in an `attributedBody` NSArchiver blob
+instead of the `text` column. SQLite cannot `LIKE` into it, so
+`search_messages` runs a SQL pass and a Python blob scan and merges the results.
+Dropping the blob scan loses between a third and two thirds of hits, depending
+on the term.
+
+Sending reads its own outcome back out of `chat.db`, because AppleScript
+returning cleanly only means Messages accepted the text, not that it left the
+machine.
+
+## Security
+
+This is the whole of your message history and, with sending on, the ability to
+speak as you. Decide deliberately.
+
+- **The token is the only control.** Anyone holding it reads every message you
+  have sent or received and can text anyone in your address book. There is one
+  token, no expiry, and no per-client revocation: rotating it cuts off every
+  client at once.
+- **Prompt injection is the sharpest edge.** The agent reads text other people
+  wrote and holds a tool that sends. Anyone who can text you can put
+  instructions in front of your agent. Run with `IMESSAGE_ALLOW_SEND=0` unless
+  you specifically need to send.
+- **A tunnel provider sees plaintext.** TLS terminates at the edge, so whoever
+  runs your tunnel can read everything passing through it.
+- **There is no audit trail.** The server logs session IDs, not tool calls. After
+  a leak you cannot tell what was read.
+- **A hostname is not a secret, and also not nothing.** A Cloudflare wildcard
+  certificate keeps a tunnel subdomain out of Certificate Transparency, so it is
+  not enumerable that way. Do not treat that as a control. There is no rate
+  limiting and no IP allowlist unless you add them at the edge.
+- **Other people's privacy is in here too.** Your history is also their history,
+  and they did not agree to any of this.
+
+Local stdio, read-only, is the safe default. Everything beyond that is a
+deliberate trade.
+
 ## Gotchas worth keeping
 
 - AppleScript returning success means Messages accepted the text, not that it
   left the machine. Always read the outcome back out of `chat.db`.
-- Redirect rules are terminating. This zone had two rules 301ing the hostname;
-  excluding the first just handed the request to the second, which looks exactly
-  like the edit failing. The `location` header names which one fired.
+- Cloudflare redirect rules are terminating. One zone here had two rules 301ing
+  the tunnel hostname; excluding the first just handed the request to the
+  second, which looks exactly like the edit failing. The `location` header names
+  which one fired.
+- `cloudflared` defaults to QUIC. Behind a VPN with a low MTU, UDP breaks and the
+  tunnel dies every few minutes. `--protocol http2` fixes it.
 - `cloudflared tunnel route dns` silently appends the authorized zone, producing
-  junk like `relay-x.example.com.other-zone.info`, and has no delete.
+  junk like `relay.example.com.other-zone.info`, and has no delete.
 - `cloudflared tunnel login` refuses to run while a `cert.pem` exists. A running
   tunnel does not need it; credentials live in the per-tunnel JSON.
 - `ESCAPE '\'` in a Python string compiles to empty and SQLite rejects it. The
   source needs `ESCAPE '\\'`.
 - `when` is a reserved word in SQLite.
+- Apple stores message dates as nanoseconds since 2001-01-01, and as seconds on
+  macOS 10.12 and earlier.
 
-## Exposure
+## License
 
-The endpoint is public. The bearer token is the only control in front of the
-entire message history and the ability to send as this account, and every client
-holding it is another place it can leak from. Narrowing the hostname to known
-client IP ranges with a Cloudflare WAF rule is not done yet.
+MIT. See [LICENSE](LICENSE).
