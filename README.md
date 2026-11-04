@@ -64,7 +64,7 @@ read-only server; the send tool is then never registered, so it is absent from
 | `get_conversation(chat, limit=50, before="")` | Recent messages in one conversation |
 | `search_messages(query, limit=40, handle="")` | Case-insensitive substring search, newest first |
 | `find_contact(query, limit=20)` | Name to handles, with message counts |
-| `send_message(to, text)` | Sends. Registered only when `IMESSAGE_ALLOW_SEND` is not `0` |
+| `send_message(to, text)` | Sends to a handle or a group chat. Registered only when `IMESSAGE_ALLOW_SEND` is not `0` |
 
 ## Full Disk Access
 
@@ -135,6 +135,23 @@ send_message("+15550123456", "running late")
 Message counts are there so you can pick between several handles for one
 person. Prefer the one with real traffic.
 
+**A group is addressed by name, not by handle.** Pass the group's name, or the
+`chatNNN` identifier `list_chats` prints beside it, and the server finds the
+chat itself. There is no way to send to a list of handles; the group chat is the
+only group there is.
+
+```
+list_chats()
+  -> Climbing Trip [chat9092627616946993] - 1184 msgs, last 2026-01-02 11:13:04
+send_message("Climbing Trip", "running late")
+```
+
+One group is usually several rows in the database. Renaming it forks the
+thread, and a group with an Android member in it carries an iMessage row and an
+RCS row under one identifier. Only one of them is the row Messages will talk
+to, so candidates are ranked by last genuine activity and checked against the
+live chat list before anything is sent.
+
 **Do not pick a service.** There is no SMS or RCS argument and there should not
 be. The server reads which conversation the contact actually replies on and
 routes there. Asking for a service by hand is how messages get lost.
@@ -149,6 +166,8 @@ routes there. Asking for a service by hand is how messages get lost.
 | `not sent: <error>` | AppleScript refused outright |
 | `unknown: no Automation access … (-1712)` | Consent missing. **Never retry** |
 | `queued for +1555…, no delivery record yet` | No verdict within 25s. Check before resending |
+| `not sent: 'Climbing Trip' is in the message history but not among the 296 …` | Group outside the live chat list. Open it in Messages first |
+| `not sent: no group chat matching 'x'` | The name matched no group. For one person, pass a handle |
 
 On `unknown` or `queued`, read the conversation with `get_conversation` before
 doing anything else.
@@ -191,10 +210,20 @@ RCS writes its database row several seconds slower than iMessage, so the
 read-back waits 25 seconds. A `queued` return means the wait ran out, not that
 the send failed.
 
-**Addressing a chat by its GUID looks right and does not work.** AppleScript
-only resolves the conversations Messages currently holds, which was 231 of 3383
-on the machine this was built on. Anything older fails with `-1728`, "Can't get
-chat id", which looks like a missing contact rather than a stale chat list.
+**A chat guid does work, and the class is `chat`.** `send body to chat id
+"iMessage;+;chat9092627616946993"` reaches a group, and the guid names the
+service, so a group send picks no account. `text chat id`, the obvious spelling
+and the one this project tried first, parses as the *text* of a chat and fails
+with `-1728`, which is indistinguishable from a chat Messages no longer holds.
+That one wrong error sent the send tool down a handles-only path and left group
+chats unreachable for months.
+
+The stale-chat limit is real underneath it. AppleScript resolves only the
+conversations Messages currently holds, 296 of 3515 on the machine this was
+built on, 80 of 1128 groups. So `get id of chats` is read first and a group
+outside that list is refused with the reason, rather than attempted: a send
+that failed for an unknown reason cannot be safely retried against the next
+candidate guid.
 
 ## Contact names
 
