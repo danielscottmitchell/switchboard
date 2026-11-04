@@ -64,6 +64,8 @@ read-only server; the send tool is then never registered, so it is absent from
 | `get_conversation(chat, limit=50, before="")` | Recent messages in one conversation |
 | `search_messages(query, limit=40, handle="")` | Case-insensitive substring search, newest first |
 | `find_contact(query, limit=20)` | Name to handles, with message counts |
+| `check_sent(to="", limit=10)` | What became of messages you sent: sent, delivered, read or failed |
+| `status()` | Whether the server can read the database and drive Messages, and which binary it runs as |
 | `send_message(to, text)` | Sends to a handle or a group chat. Registered only when `IMESSAGE_ALLOW_SEND` is not `0` |
 
 ## Full Disk Access
@@ -169,8 +171,44 @@ routes there. Asking for a service by hand is how messages get lost.
 | `not sent: 'Climbing Trip' is in the message history but not among the 296 …` | Group outside the live chat list. Open it in Messages first |
 | `not sent: no group chat matching 'x'` | The name matched no group. For one person, pass a handle |
 
-On `unknown` or `queued`, read the conversation with `get_conversation` before
-doing anything else.
+On `unknown` or `queued`, call `check_sent` before doing anything else. It
+reads the delivery flags straight out of `chat.db`, so it separates the states
+`send_message` cannot always see in time:
+
+```
+check_sent("+15550123456", limit=2)
+  [2026-11-03 16:38:28] Jordan Vance over RCS: read
+      looking forward to talking
+  [2026-11-03 10:17:54] Jordan Vance over RCS: delivered
+      sounds good
+```
+
+`read` beats `delivered` beats `sent, no delivery receipt`. SMS and RCS rarely
+produce a read receipt, so `delivered` is the strongest verdict you will see for
+most non-Apple contacts. Treat a missing read receipt as no information, not as
+bad news. Passing a group name instead of a handle works too, which is the only
+way to confirm a group send, because an outgoing group message carries no
+recipient handle.
+
+`status()` exists because the failures here are quiet and independent. It names
+the interpreter it runs as, which is what the two macOS grants are keyed to, and
+checks each grant separately:
+
+```
+status()
+  interpreter: /path/to/switchboard/.venv/bin/python3
+  chat.db: readable, 723,859 messages across 3,384 chats and 3,083 handles
+  newest message: 2026-11-04 10:43:44
+  snapshot: 1419s old, refreshed when the source moves
+  contacts: 843 names, resolving 1,078 of 3,083 handles
+  send tool: registered
+  Messages automation: granted
+  Messages app: running
+```
+
+An unreadable database says so and names the binary to grant Full Disk Access
+to. A missing Automation grant reports itself as held by other clients but not
+this one, which is the exact state that makes every send die with `-1712`.
 
 ## Services, and why RCS matters
 
