@@ -361,7 +361,7 @@ def check_sent(to: str = "", limit: int = 10) -> str:
                    m.is_sent AS is_sent, m.is_delivered AS is_delivered,
                    m.is_read AS is_read, m.text AS text,
                    m.attributedBody AS attributedBody,
-                   m.has_attachment AS has_attachment,
+                   m.cache_has_attachments AS has_attachment,
                    h.id AS handle, c.display_name AS display_name,
                    c.chat_identifier AS chat_identifier
             FROM message m
